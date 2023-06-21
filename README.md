@@ -1,4 +1,4 @@
-# Final Degree Project
+# Final Degree Project: Proteomic signatures associated with the body composition at baseline and after five years of follow-up in an adult population.
 ## Description
 This repository contains scripts used for the project: Proteomic signatures associated with the body composition at baseline and after five years of follow-up in an adult population.  
 The project aimed to characterize plasma proteomic profiles associated to baseline body composition and changes in body weight in two Swedish cohorts composed of adult men and women.  
@@ -28,3 +28,8 @@ All models incorporated the same values for parameters (except parameters `X`, `
 *	`Descriptive_BMI.Rmd`: script exploring the baseline characteristics of participants according to three BMI categories. This script was employed to generate Table S1.
 *	`rdcv.PLS.modeling.Rmd`: script including performance and validation of rdCV-PLS models assessing the association (in a continuous scale) of plasma proteome and baseline BMI, WC and %BF.
 *	`rdcv.RF.modeling.Rmd`: script including performance and validation of rdCV-RF models assessing the association (in a categorical scale) of plasma proteome and baseline BMI, WC and %BF.
+
+## Requirements
+* R version 4.1.1
+* MUVR package
+* gtsummary package
