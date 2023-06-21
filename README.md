@@ -30,6 +30,6 @@ All models incorporated the same values for parameters (except parameters `X`, `
 *	`rdcv.RF.modeling.Rmd`: script including performance and validation of rdCV-RF models assessing the association (in a categorical scale) of plasma proteome and baseline BMI, WC and %BF.
 
 ## Requirements
-* R version 4.1.1
-* MUVR package
-* gtsummary package
+* `R version 4.1.1`
+* `MUVR` package
+* `gtsummary` package
