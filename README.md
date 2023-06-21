@@ -24,6 +24,8 @@ All models incorporated the same values for parameters (except parameters `X`, `
 *	`diseases.csv`: dataset containing all documented disease diagnoses of participants as well as the date of their visit to clinical examination.
 *	`ICD10 _codes_10_selected.xlsx`: dataset containing a conversion of diseases names and their abbreviations in ICD10 format
 
+<i> Due to data protection reasons, input files cannot be shared.</i>
+
 ## Scripts
 *	`Descriptive_BMI.Rmd`: script exploring the baseline characteristics of participants according to three BMI categories. This script was employed to generate Table S1.
 *	`rdcv.PLS.modeling.Rmd`: script including performance and validation of rdCV-PLS models assessing the association (in a continuous scale) of plasma proteome and baseline BMI, WC and %BF.
