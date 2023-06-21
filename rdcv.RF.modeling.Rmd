@@ -1,0 +1,411 @@
+---
+title: "MUVR rdCV-RF Data Analysis and Validation based on BMI, WC and %BF categories"
+author: 
+- "Cristina Artero Martínez (Main author)"
+- "Enrique Almanza Aguilera (Supervision & Edition)"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  rmdformats::readthedown:
+    higlight: kate
+    code_folding: hide
+    toc_depth: 4
+  BiocStyle::html_document:
+    toc: true
+    number_sections: false
+    toc_float: true
+---
+
+<style type = "text/css">
+h1.title{ /* Title */
+  font-size: 40px
+}
+h1{ /* Header 1 */
+  font-size: 24px
+}
+h2{ /* Header 2 */
+  font-size: 20px
+}
+h3{ /* Header 3 */
+  font-size: 18px
+}
+h4{ /* Header 4 */
+  font-size: 15px
+}
+h5{ /* Header 5 */
+  font-size: 12px
+}
+</style>
+
+
+```{r startpoint, include = FALSE,echo = FALSE,message=FALSE}
+startpoint=Sys.time()
+```
+
+The following report summarizes the models obtained with rdcv-RF for the different proteomics panels based on the BMI, WC and %BF categories. Note that models were sex-stratified (i.e., performed on all individuals, only females and only males).
+
+
+# Setting and loading packages + setting directories
+Packages and directories need to be prepared in order to have easier ways to operate and access data.
+```{r Loading packages, message=FALSE, warning = FALSE,echo = FALSE}
+# With the following list, packages are automatically loaded in the next instruction
+packages=c("doParallel","Rdisop","kableExtra","magrittr","rmarkdown","BioMark","MUVR","impute","missForest","plyr","ropls","parallel","factoextra","dplyr","BiocParallel")
+
+#install.pack=packages[!packages %in% installed.packages()]
+#for(i in install.pack) install.packages(i,dependencies=TRUE)
+
+# With this instruction, packages are loaded properly
+invisible(lapply(packages, library, character.only = TRUE))
+
+# Preparing the directories
+# This directory represents the main directory (it contains the other directories, defined below)
+dir.datasets = "/home/crisam/crisam/datasets/"
+# This directory contains proteomics data of participants (here there are datasets corresponding to proteomics panels)
+dir.proteo = "/home/crisam/crisam/datasets/proteomics/"
+# This directory contains clinical data of participants (here there is stored the clinical examination dataset)
+dir.clin = "/home/crisam/crisam/datasets/clinical/"
+```
+
+
+# Loading datasets
+Different datasets need to be loaded in order to model data. Below, in comments, there are specifications about them.
+```{r}
+# Loading the dataset with the population of interest
+delta.bwa_df = readRDS(file = paste0(dir.clin, "delta.bwa.omics.rds")) # this dataset corresponds to the Rdata object containing the dataset based on the population of interest
+prot = delta.bwa_df$delta.bwa.prot # this is the dataset with the population of interest
+
+# Loading the proteomics panels
+CVD2 = read.csv(paste0(dir.proteo, "CVD2.csv")) # this is Cardiovascular II panel
+CVD3 = read.csv(paste0(dir.proteo, "CVD3.csv")) # this is Cardiovascular III panel
+metabolism = read.csv(paste0(dir.proteo, "Metabolism.csv")) # this is cardiomaetabolic panel
+
+# Loading the clinical examination dataset (the one containing waist circumferences (WC) and fat mass measures)
+clin = read.csv(paste0(dir.clin, "visitclin.csv"))
+```
+
+
+# Predefining some variables
+Some variables need to be reformatted or included. Specifically, those that represent a factor or a date variable. This is to ensure the proper manipulation of data for posterior analyses.
+```{r}
+# Reformatting
+# Sex must be a factor variable
+prot$sex = as.factor(prot$sex)
+# The cohort is also a factor variable and needs to be formatted as it
+prot$project = as.factor(prot$project)
+# The visitdate variable needs to be formatted as a date variable instead of a string
+prot$visitdate = as.Date(prot$visitdate, "%Y-%m-%d")
+
+# Including
+# WC must be incorporated to the dataset of the population of interest
+prot = merge(prot, clin[,c("SIMPKEY", "Waist")])
+# %BF must be computed and included to the dataset of the population of interest
+clin$X100_fett_total = (clin$fett_total/1000)/clin$weight * 100
+prot = merge(prot, clin[,c("SIMPKEY", "X100_fett_total")])
+```
+
+
+# Preprocessing the proteomics panels
+Once all datasets have been loaded, we must perform a few preprocessing steps to ensure that:
+* the study population is only being considered.
+* the variable of interest is being included in the dataset (i.e., BMI, WC, %BF).
+* categories are classified based on their variables' particular thresholds.
+* individuals or proteins with a high number of missings are removed.
+```{r}
+# The function takes 2 arguments: a dataset (one of the proteomics panels) that will be preprocessed based on the conditions specified above, and a variable name that will determine the variable which will be the main response variable from the dataset
+preprocess_dataset = function(dataset, variable){
+  # The panels do not have the project updated and may need it up to date
+  dataset$project = NULL
+  # The script focuses on 3 main variables of exposure: BMI, WC and %BF. This means that they need to be included to each proteomic panel
+  dataset = merge(dataset, prot[, c("SIMPKEY", "project", "bmi.clin", "Waist", "X100_fett_total")], by = "SIMPKEY")
+  # In the case of working with a certain variable, the population of interest will contemplate several participants or not. Therefore, for each variable, only individuals with information (no missing values) will be considered
+  if (variable == "bmi.clin"){
+    dataset = dataset[complete.cases(dataset$bmi.clin),]
+    dataset = dataset[dataset$bmi.clin >= 18.5 & dataset$bmi.clin < 40,]
+    # For BMI tests two main comparisons were performed:
+    # - Normal weight vs Overweight vs Obesity  
+    dataset$bmi.category = as.factor(ifelse(dataset$bmi.clin < 25, "normal weight", ifelse(dataset$bmi.clin < 30, "overweight", "obesity")))
+    # - Normal weight vs Overweight + Obesity 
+  dataset$bmi.category2 = as.factor(ifelse(dataset$bmi.clin < 25, "normal weight", "overweight + obesity"))
+  }
+  else if (variable == "Waist"){
+    dataset = dataset[complete.cases(dataset$Waist),]
+    # For WC tests three main comparisons were performed:
+    # - No metabolic risk vs Increased metabolic risk vs Substantially increased metabolic risk  
+    dataset$wc.category = as.factor(ifelse(dataset$Waist < 80 & dataset$sex == "F", "no metabolic risk", ifelse(dataset$Waist < 88 & dataset$sex == "F", "increased metabolic risk", ifelse(dataset$Waist > 88 & dataset$sex == "F", "substantially increased metabolic risk", ifelse(dataset$Waist < 94 & dataset$sex == "M", "no metabolic risk", ifelse(dataset$Waist < 102, "increased metabolic risk", "substantially increased metabolic risk"))))))
+    # - No metabolic risk vs Increased metabolic risk + Substantially increased metabolic risk  
+  dataset$wc.category2 =  as.factor(ifelse(dataset$Waist < 80 & dataset$sex == "F", "no metabolic risk", ifelse(dataset$Waist < 88 & dataset$sex == "F", "metabolic risk", ifelse(dataset$Waist < 94 & dataset$sex == "M", "no metabolic risk", "metabolic risk"))))
+  # - No metabolic risk vs Substantially increased metabolic risk  
+  dataset$wc.category3 = as.factor(ifelse(dataset$Waist < 80 & dataset$sex == "F", "no metabolic risk", ifelse(dataset$Waist < 88 & dataset$sex == "F", "-", ifelse(dataset$Waist > 88 & dataset$sex == "F", "substantially increased metabolic risk", ifelse(dataset$Waist < 94 & dataset$sex == "M", "no metabolic risk", ifelse(dataset$Waist < 102, "-", "substantially increased metabolic risk"))))))
+  }
+  else{
+    dataset = dataset[complete.cases(dataset$X100_fett_total),]
+    # For %BF tests the comparisons was normal weight vs obesity. Note that although men are contemplated, men in the study did not have DEXA information, so in the end they will not be included in the model 
+    dataset$fett.category = as.factor(ifelse(dataset$X100_fett_total < 35 & dataset$sex == "F", "normal weight", ifelse(dataset$X100_fett_total > 35 & dataset$sex == "F", "obesity", ifelse(dataset$X100_fett_total < 25 & dataset$sex == "M", "normal weight", "obesity"))))
+  }
+  # As explained before, proteins or individuals with more or equal than 50% of missings must be rejected.
+  dataset = dataset[rowSums(is.na(dataset)) <= 92/2,]
+  dataset = dataset[,colSums(is.na(dataset)) <= nrow(dataset)/2]
+  
+  return(dataset)
+}
+```
+
+Proteomics panels are preprocessed based on the conditions previously mentioned. As depending on the variable, the number of observations will vary, it is safer to store the preprocessed panels in different objects.
+```{r}
+# Here, the panels are preprocessed based on BMI
+CVD2.bmi = preprocess_dataset(CVD2, "bmi.clin")
+CVD3.bmi = preprocess_dataset(CVD3, "bmi.clin")
+metabolism.bmi = preprocess_dataset(metabolism, "bmi.clin")
+# Here, the panels are preprocessed based on WC (the number of individuals is lower)
+CVD2.wc = preprocess_dataset(CVD2, "Waist")
+CVD3.wc = preprocess_dataset(CVD3, "Waist")
+metabolism.wc = preprocess_dataset(metabolism, "Waist")
+# Here, the panels are preprocessed based on %BF (the number of individuals is even lower)
+CVD2.bf = preprocess_dataset(CVD2, "bf")
+CVD3.bf = preprocess_dataset(CVD3, "bf")
+metabolism.bf = preprocess_dataset(metabolism, "bf")
+```
+
+
+# Misclassifications in categories
+Knowing the misclassification rate (MISS) or the area under the curve (AUC) of the model is not enough. Additional information such as the misclassification rate for each group is important to understand if the model is more biased to one class or not. The following function will be useful to determine the number of misclassifications per class.
+```{r}
+# The function takes the original Y-vector and the predicted one
+MISS_per_classifications = function(ydata, model_ydata){
+  # By creating a table, we compare categories, therefore, we can check how many observations where correctly predicted by category
+  mat = unclass(table(ydata, model_ydata))
+  # As we are interested only on misclassifcations, the diagonal (correctly predicted observations) are not interesting
+  diag(mat) = 0
+  return(rowSums(mat))
+}
+```
+
+
+# Sex-stratification
+One of the main objectives in the study was to understand anthropometric measures on 2 Swedish cohorts, which are composed of different sex. To perform that, this function will be useful to create datasets based on the sex of participants.
+```{r}
+# The function takes 2 arguments: a dataset (one of the proteomics panels) that will be sex-stratified, and the sex which will define the stratification
+subset_by_sex = function(dataset, sex){
+  # In the case of specifying female,
+  if (sex == "F"){
+    # the dataset will only include female indivduals
+    subset = dataset[dataset$sex == "F",]
+  }
+  # If the specification refers to male,
+  else{
+    # the dataset will be subsetted to male individuals
+    subset = dataset[dataset$sex == "M",]
+  }
+  
+  return(subset)
+}
+```
+
+
+# Modeling
+The model parameters are the same for all models, the only difference is the used response variable and the specified sex-stratification. A simpler way to model could be by defining a function to automatically do it. As a reminder, model parameters where:
+* the proteome panel/dataset (X)
+* a response vector corresponding to the exposure variable (Y)
+* a vector of unique variable identifiers (ids)
+* the number of repetitions (nRep = 10)
+* the number of outer cross-validation segments (nOuter = 8)
+* the variable ratio (proportion of variables kept per iteration, varRatio = 0.7)
+```{r}
+model.rdcv = function(dataset, response, sex){
+  # This condition is to check whether we have specified to run the model with a certain sex group or not.
+  if (!missing(sex)){
+    dataset = subset_by_sex(dataset, sex)
+  }
+  
+   # First, we must prepare the X matrix, the Y vector and the IDS vector. We must also impute values in case they are NA (as the algorithm cannot classify missing values). A scaling step is recommended.
+  xdata = dataset[, grep("^OID", colnames(dataset))]
+  xdata = impute.knn(t(xdata), k=10, rowmax = 60, colmax = 60, maxp = 5000)
+  xdata = t(xdata$data)
+  ydata = dataset[, grep(response, colnames(dataset))]
+  kable(table(ydata), caption = "Distribution of categories", col.names = c("Categories", "Frequency"))
+  idx = dataset$SIMPKEY
+  
+  # The following parameters refer to parameters from the modeling function. Notice that the number of cores is not equal tot the total. That is to allow external computations and avoid a risk of a collapse. 
+  ncores=detectCores()-1
+  nRep=ncores
+  nOuter=8
+  nInner=nOuter-1
+  varRatio=0.70
+  methParam.RF=customParams(method = 'RF',ntreeIn = 150,ntreeOut = 300)
+  
+  # An important step is to parallelize. This is to optimize the execution of the code. If not, the model would take hours to finish. 
+  cl=makeCluster(ncores)
+  registerDoParallel(cl)
+  
+  # The model is performed based on the parameters from above. Check that after it, the parallelization must stop.
+  model = MUVR(X = xdata, Y = ydata, ID = idx, nRep = nRep, nOuter = nOuter, nInner = nInner, varRatio = varRatio, method = 'RF', fitness = 'MISS', methParam = methParam.RF)
+  
+  # After having performed the model, parallelization is no longer needed
+  stopCluster(cl)
+  
+  print("Number of misclasifications")
+  model$miss
+  modelFit = model$miss[2]
+  print(paste0("Error rate (%): ", round(modelFit/nrow(xdata)*100,2), "%"))
+  
+  print("Plot Misclasifications by category")
+  plotMV(model,model = "mid")
+  
+  
+  print("AUC classifications")
+  model$auc
+  
+  print("Number VIP Features")
+  mod.vips = getVIP(MVObj = model, model = "mid")
+  nrow(mod.vips)
+  
+  print("Misclassifcations per classification groups")
+  mpc = MISS_per_classifications(ydata, model$yClass$mid)
+  print(mpc)
+  print(paste0(round(mpc/modelFit*100,2), "%"))
+  
+  return(model)
+}
+```
+
+
+# Individual panels
+BMI was explored not only on all proteomics panels combined but also on individual panels. Therefore, there is the code to explore each panel on each sex-stratification for BMI.
+```{r rdcv-RF for individual panels for BMI categories, warning = FALSE, echo = FALSE, message=FALSE}
+model1 = model.rdcv(CVD2.bmi, "bmi.category$")
+model2 = model.rdcv(CVD2.bmi, "bmi.category2")
+model3 = model.rdcv(CVD2.bmi, "bmi.category$", "F")
+model4 = model.rdcv(CVD2.bmi, "bmi.category2", "F")
+model5 = model.rdcv(CVD2.bmi, "bmi.category$", "M")
+model6 = model.rdcv(CVD2.bmi, "bmi.category2", "M")
+model7 = model.rdcv(CVD3.bmi, "bmi.category$")
+model8 = model.rdcv(CVD3.bmi, "bmi.category2")
+model9 = model.rdcv(CVD3.bmi, "bmi.category$", "F")
+model10 = model.rdcv(CVD3.bmi, "bmi.category2", "F")
+model11 = model.rdcv(CVD3.bmi, "bmi.category$", "M")
+model12 = model.rdcv(CVD3.bmi, "bmi.category2", "M")
+model13 = model.rdcv(metabolism.bmi, "bmi.category$")
+model14 = model.rdcv(metabolism.bmi, "bmi.category2")
+model15 = model.rdcv(metabolism.bmi, "bmi.category$", "F")
+model16 = model.rdcv(metabolism.bmi, "bmi.category2", "F")
+model17 = model.rdcv(metabolism.bmi, "bmi.category$", "M")
+model18 = model.rdcv(metabolism.bmi, "bmi.category2", "M")
+```
+
+
+# All panels
+The following code will be used to combine all panels into a single one. As panels were preprocessed differently for each variable of exposure (BMI, WC and %BF), the combination of panels appears in three different ways.
+```{r}
+# BMI
+all.bmi = merge(CVD2.bmi[, c(1,grep("^OID", colnames(CVD2.bmi)))], CVD3.bmi[, c(1,grep("^OID", colnames(CVD3.bmi)))], by = "SIMPKEY")
+all.bmi = merge(all.bmi, metabolism.bmi[, grep("SIMPKEY|sex|bmi.category|^OID", colnames(metabolism.bmi))], by = "SIMPKEY")
+# WC
+all.wc = merge(CVD2.wc[, c(1,grep("^OID", colnames(CVD2.wc)))], CVD3.wc[, c(1,grep("^OID", colnames(CVD3.wc)))], by = "SIMPKEY")
+all.wc = merge(all.wc, metabolism.wc[, grep("SIMPKEY|sex|wc.category|^OID", colnames(metabolism.wc))], by = "SIMPKEY")
+# %BF
+all.bf = merge(CVD2.bf[, c(1,grep("^OID", colnames(CVD2.bf)))], CVD3.bf[, c(1,grep("^OID", colnames(CVD3.bf)))], by = "SIMPKEY")
+all.bf = merge(all.bf, metabolism.bf[, grep("SIMPKEY|sex|fett.category|^OID", colnames(metabolism.bf))], by = "SIMPKEY")
+```
+
+## Modeling all panels
+Below, there are the models performed on BMI, WC and %BF. Note that BMI and WC models incorporate sex-stratifications whereas %BF no (as SMC-C Uppsala individuals were the only participants containing information about fat mass measurements).
+```{r rdcv-RF for all panels for BMI and WC and %BF, warning = FALSE, echo = FALSE, message=FALSE}
+model19 = model.rdcv(all.bmi, "bmi.category$")
+model20 = model.rdcv(all.bmi, "bmi.category2")
+model21 = model.rdcv(all.bmi, "bmi.category$", "F")
+model22 = model.rdcv(all.bmi, "bmi.category2", "F")
+model23 = model.rdcv(all.bmi, "bmi.category$", "M")
+model24 = model.rdcv(all.bmi, "bmi.category2", "M")
+
+model25 = model.rdcv(all.wc, "wc.category$")
+model26 = model.rdcv(all.wc, "wc.category2")
+model27 = model.rdcv(all.wc, "wc.category3")
+model28 = model.rdcv(all.wc, "wc.category$", "F")
+model29 = model.rdcv(all.wc, "wc.category2", "F")
+model30 = model.rdcv(all.wc, "wc.category3", "F")
+model31 = model.rdcv(all.wc, "wc.category$", "M")
+model32 = model.rdcv(all.wc, "wc.category2", "M")
+model33 = model.rdcv(all.wc, "wc.category3", "M")
+
+model34 = model.rdcv(all.bf, "fett.category")
+```
+
+
+# Saving the models
+The completion of all models may take several hours. This supposes a lot of time and resources. Therefore, results from models should be stored in Rdata objects to easily retrieve their information. This step is to save the models in order to later work with them.
+```{r}
+models = list("model1" = model1, "model2" = model2, 
+              "model3" = model3, "model4" = model4, 
+              "model5" = model5, "model6" = model6,
+              "model7" = model7, "model8" = model8, 
+              "model9" = model9, "model10" = model10, 
+              "model11" = model11, "model12" = model12,
+              "model13" = model13, "model14" = model14,
+              "model15" = model15, "model16" = model16, 
+              "model17" = model17, "model18" = model18,
+              "model19" = model19, "model20" = model20, 
+              "model21" = model21, "model22" = model22, 
+              "model23" = model23, "model24" = model24,
+              "model25" = model25, "model26" = model26, 
+              "model27" = model27, "model28" = model28,
+              "model29" = model29, "model30" = model30, 
+              "model31" = model31, "model32" = model32, 
+              "model33" = model33, "model34" = model34)
+
+saveRDS(models, file = paste0(dir.datasets,"models.RF.rds"))
+```
+
+
+# Validation
+Once models were obtained, significant ones needed to be validated. To do that, permutation testing was used as seen below. Check that the parameters used are the same as in standard modeling.
+```{r rdcv-RF permutations, warning = FALSE, echo = FALSE, message=FALSE}
+# The following function takes as arguments the model to validate, its X-matrix, its Y-vector, its ids and its number of misclassifications
+validation = function(model, xdata, ydata, idx, MISS){
+  # As before, parallelization is required, so we must first set the number of cores (again: all cores minus one)
+  ncores=detectCores()-1
+  # After setting the parameter, parallelization starts to optimize the code
+  cl=makeCluster(ncores)
+  registerDoParallel(cl)
+  
+  # The number of permutations must be a sufficient one. 20 are more than enough
+  for (p in 1:20) {
+    cat('\nPermutation',p,'of',20)
+    # The Y-vector is sampled, so labels are shuffled
+    YPerm = sample(ydata)
+    # The model is performed on the modified Y-vector
+    perm = MUVR(X = xdata, Y = YPerm, ID = idx, nRep = 10, nOuter = 8, nInner = 7, varRatio = 0.7, method = 'RF', fitness = 'MISS', methParam = methParam.RF)
+    # The only important parameter is the misclassification from the permutation, so it must be stored
+    permFit[p]=perm$miss[2]
+  }
+
+  print("Permutation Test")
+  # Once all misclassifications are stored a parametric comparison is performed to evaluate the quality of parameters 
+  pPerm(actual = MISS, h0 = permFit, type = "t")
+  # This plot will help to compare the model's number of misclassifications to the ones from permutations from the parametric test
+  plotPerm(actual = MISS, h0 = permFit, type="t") 
+  # Here, a non-parametric comparison is performed to also evaluate the quality of parameters
+  pPerm(actual = MISS, h0 = permFit, type = "non")
+  # This plot will help to compare the model's number of misclassifications to the ones from permutations from the non-parametric test
+  plotPerm(actual = MISS, h0 = permFit, type="non") 
+  
+  # Finally, parallelization ends as it is no longer required
+  stopCluster(cl)
+}
+```
+
+After having defined the function, validation can start for selected models.
+```{r}
+test8.2 = validation(model20, model20$inData$X, model20$inData$Y, model20$inData$ID, model20$miss[2]) # BMI on F & M
+test8.2F = validation(model22, model22$inData$X, model22$inData$Y, model22$inData$ID, model22$miss[2]) # BMI on F
+test12.3 = validation(model27, model27$inData$X, model27$inData$Y, model27$inData$ID, model27$miss[2]) # WC on F & M
+test12.3F = validation(model30, model30$inData$X, model30$inData$Y, model30$inData$ID, model30$miss[2]) # WC on F
+test13.1 = validation(model34, model34$inData$X, model34$inData$Y, model34$inData$ID, model34$miss[2]) # %BF (on F)
+```
+
+
+# Saving the data
+After having performed models and their respective validation tests, one way to ensure that results are not lost is by saving the Rdata into a file.
+```{r}
+save.image(file=paste0("rdCV.RF.validation.RData"))
+```
+
+

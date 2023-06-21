@@ -1,0 +1,301 @@
+---
+title: "MUVR rdCV-PLS Data Analysis based on BMI, WC and %BF"
+author: 
+- "Cristina Artero Martínez (Main author)"
+- "Enrique Almanza Aguilera (Supervision & Edition)"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  rmdformats::readthedown:
+    higlight: kate
+    code_folding: hide
+    toc_depth: 4
+  BiocStyle::html_document:
+    toc: true
+    number_sections: false
+    toc_float: true
+---
+
+<style type = "text/css">
+h1.title{ /* Title */
+  font-size: 40px
+}
+h1{ /* Header 1 */
+  font-size: 24px
+}
+h2{ /* Header 2 */
+  font-size: 20px
+}
+h3{ /* Header 3 */
+  font-size: 18px
+}
+h4{ /* Header 4 */
+  font-size: 15px
+}
+h5{ /* Header 5 */
+  font-size: 12px
+}
+</style>
+
+
+```{r startpoint, include = FALSE,echo = FALSE,message=FALSE}
+startpoint=Sys.time()
+```
+
+The following report summarizes the models obtained with rdcv-PLS for the different proteomics panels based on the BMI, WC and %BF. Note that models were sex-stratified (i.e., performed on all individuals, only females and only males).
+
+
+# Setting and loading packages + setting directories
+Packages and directories need to be prepared in order to have easier ways to operate and access data.
+```{r Loading packages, message=FALSE, warning = FALSE,echo = FALSE}
+# With the following list, packages are automatically loaded in the next instruction
+packages=c("doParallel","Rdisop","kableExtra","magrittr","rmarkdown","BioMark","MUVR","impute","missForest","plyr","ropls","parallel","factoextra","dplyr","BiocParallel")
+
+#install.pack=packages[!packages %in% installed.packages()]
+#for(i in install.pack) install.packages(i,dependencies=TRUE)
+
+# With this instruction, packages are loaded properly
+invisible(lapply(packages, library, character.only = TRUE))
+
+# Preparing the directories
+# This directory represents the main directory (it contains the other directories, defined below)
+dir.datasets = "/home/crisam/crisam/datasets/"
+# This directory contains proteomics data of participants (here there are datasets corresponding to proteomics panels)
+dir.proteo = "/home/crisam/crisam/datasets/proteomics/"
+# This directory contains clinical data of participants (here there is stored the clinical examination dataset)
+dir.clin = "/home/crisam/crisam/datasets/clinical/"
+```
+
+
+# Loading datasets
+Different datasets need to be loaded in order to model data. Below, in comments, there are specifications about them.
+```{r}
+# Loading the dataset with the population of interest
+delta.bwa_df = readRDS(file = paste0(dir.clin, "delta.bwa.omics.rds")) # this dataset corresponds to the Rdata object containing the dataset based on the population of interest
+prot = delta.bwa_df$delta.bwa.prot # this is the dataset with the population of interest
+
+# Loading the proteomics panels
+CVD2 = read.csv(paste0(dir.proteo, "CVD2.csv")) # this is Cardiovascular II panel
+CVD3 = read.csv(paste0(dir.proteo, "CVD3.csv")) # this is Cardiovascular III panel
+metabolism = read.csv(paste0(dir.proteo, "Metabolism.csv")) # this is cardiomaetabolic panel
+
+# Loading the clinical examination dataset (the one containing waist circumferences (WC) and fat mass measures)
+clin = read.csv(paste0(dir.clin, "visitclin.csv"))
+```
+
+
+# Predefining some variables
+Some variables need to be reformatted or included. Specifically, those that represent a factor or a date variable. This is to ensure the proper manipulation of data for posterior analyses.
+```{r}
+# Reformatting
+# Sex must be a factor variable
+prot$sex = as.factor(prot$sex)
+# The cohort is also a factor variable and needs to be formatted as it
+prot$project = as.factor(prot$project)
+# The visitdate variable needs to be formatted as a date variable instead of a string
+prot$visitdate = as.Date(prot$visitdate, "%Y-%m-%d")
+
+# Including
+# WC must be incorporated to the dataset of the population of interest
+prot = merge(prot, clin[,c("SIMPKEY", "Waist")])
+# %BF must be computed and included to the dataset of the population of interest
+clin$X100_fett_total = (clin$fett_total/1000)/clin$weight * 100
+prot = merge(prot, clin[,c("SIMPKEY", "X100_fett_total", "fett_total", "fett_gynoid", "fett_android")])
+```
+
+
+# Preprocessing the proteomics panels
+Once all datasets have been loaded, preprocessing steps must be performed to ensure that:
+* the population of interest is only being considered.
+* the variables of interest are being included in the dataset (i.e., BMI, WC, %BF).
+* individuals or proteins with a high number of missings are removed.
+```{r}
+# The function takes 2 arguments: a dataset (one of the proteomics panels) that will be preprocessed based on the conditions specified above, and a variable name that will determine the variable which will be the main response variable from the dataset
+preprocess_dataset = function(dataset, variable){
+  # The panels do not have the project updated and may need it up to date
+  dataset$project = NULL
+  # The script focuses on 3 main variables of exposure: BMI, WC and %BF. This means that they need to be included to each proteomic panel
+  dataset = merge(dataset, prot[, c("SIMPKEY", "project", "bmi.clin", "Waist", "X100_fett_total", "fett_total", "fett_gynoid", "fett_android")], by = "SIMPKEY")
+  # In the case of working with a certain variable, the population of interest will contemplate several participants or not. Therefore, for each variable, only individuals with information (no missing values) will be considered
+  if (variable == "bmi.clin"){
+    dataset = dataset[complete.cases(dataset$bmi.clin),]
+  }
+  else if (variable == "Waist"){
+    dataset = dataset[complete.cases(dataset$Waist),]
+  }
+  else{
+    dataset = dataset[complete.cases(dataset$X100_fett_total),]
+    dataset = dataset[complete.cases(dataset$fett_total),]
+    dataset = dataset[complete.cases(dataset$fett_gynoid),]
+    dataset = dataset[complete.cases(dataset$fett_android),]
+  }
+  # As explained before, proteins or individuals with more or equal than 50% of missings must be rejected.
+  dataset = dataset[rowSums(is.na(dataset)) <= 92/2,]
+  dataset = dataset[,colSums(is.na(dataset)) <= nrow(dataset)/2]
+  
+  return(dataset)
+}
+```
+
+Proteomics panels are preprocessed based on the conditions previously mentioned. As depending on the variable, the number of observations will vary, it is safer to store the preprocessed panels in different objects.
+```{r}
+# Here, the panels are preprocessed based on BMI
+CVD2.bmi = preprocess_dataset(CVD2, "bmi.clin")
+CVD3.bmi = preprocess_dataset(CVD3, "bmi.clin")
+metabolism.bmi = preprocess_dataset(metabolism, "bmi.clin")
+# Here, the panels are preprocessed based on WC (the number of individuals is lower)
+CVD2.wc = preprocess_dataset(CVD2, "Waist")
+CVD3.wc = preprocess_dataset(CVD3, "Waist")
+metabolism.wc = preprocess_dataset(metabolism, "Waist")
+# Here, the panels are preprocessed based on %BF (the number of individuals is even lower)
+CVD2.bf = preprocess_dataset(CVD2, "bf")
+CVD3.bf = preprocess_dataset(CVD3, "bf")
+metabolism.bf = preprocess_dataset(metabolism, "bf")
+```
+
+
+# Sex-stratification
+One of the main objectives in the study was to understand anthropometric measures on 2 Swedish cohorts, which are composed of different sex. To perform that, this function will be useful to create datasets based on the sex of participants.
+```{r}
+# The function takes 2 arguments: a dataset (one of the proteomics panels) that will be sex-stratified, and the sex which will define the stratification
+subset_by_sex = function(dataset, sex){
+  # In the case of specifying female,
+  if (sex == "F"){
+    # the dataset will only include female indivduals
+    subset = dataset[dataset$sex == "F",]
+  }
+  # If the specification refers to male,
+  else{
+    # the dataset will be subsetted to male individuals
+    subset = dataset[dataset$sex == "M",]
+  }
+  
+  return(subset)
+}
+```
+
+
+# Modeling
+The model parameters are the same for all models, the only difference is the used response variable and the specified sex-stratification. A simpler way to model could be by defining a function to automatically do it. As a reminder, model parameters where:
+* the proteome panel/dataset (X)
+* a response vector corresponding to the exposure variable (Y)
+* a vector of unique variable identifiers (ids)
+* a logical one to scale the protein expression matrix (scale, for PLS)
+* the number of repetitions (nRep = 10)
+* the number of outer cross-validation segments (nOuter = 8)
+* the variable ratio (proportion of variables kept per iteration, varRatio = 0.7)
+```{r}
+# The function takes 3 arguments (last one optional): a dataset (one of the proteomics panels), the variable of exposure and (optionally) the sex, which will define the stratification
+model.rdcv = function(dataset, response, sex){
+  # This condition is to check whether to specify to run the model with a certain sex group or not
+  if (!missing(sex)){
+    dataset = subset_by_sex(dataset, sex)
+  }
+  
+  # First, a preparation the X-matrix, the Y-vector and the IDS vector is required. Also, imputation of values in case they are NA is fundamental (as the algorithm cannot classify missing values)
+  xdata = dataset[, grep("^OID", colnames(dataset))]
+  xdata = impute.knn(t(xdata), k=10, rowmax = 60, colmax = 60, maxp = 5000)
+  xdata = t(xdata$data)
+  ydata = dataset[, grep(response, colnames(dataset))]
+  idx = dataset$SIMPKEY
+  
+  # The following parameters refer to parameters from the modeling function. Notice that the number of cores is not equal to the total. That is to allow external computations and avoid a risk of a collapse
+  ncores=detectCores()-1
+  nRep=ncores
+  nOuter=8
+  nInner=nOuter-1
+  varRatio=0.70
+  methParam.PLS=customParams(method = 'PLS')
+  
+  # An important step is to parallelize. This is to optimize the execution of the code. If not, the model would many take hours to finish 
+  cl=makeCluster(ncores)
+  registerDoParallel(cl)
+  
+  # The model is performed based on the parameters from above. Check that after it, the parallelization must stop
+  model = MUVR(X = xdata, Y = ydata, ID = idx, scale = TRUE, nRep = nRep, nOuter = nOuter, nInner = nInner, varRatio = varRatio, method = 'PLS', fitness = 'RMSEP', methParam = methParam.PLS)
+  
+  # After having performed the model, parallelization is no longer needed
+  stopCluster(cl)
+  
+  print("Fitness metrics")
+  modelFit = model$fitMetric
+  print(modelFit)
+  
+  print("Prediction plot for regression analysis")
+  plotMV(model, model = "mid")
+
+  print("Number of components")
+  print(model$nComp)
+
+  print("Number of variables")
+  print(model$nVar)
+
+  print("Number of VIP Features")
+  mod.vips = getVIP(MVObj = model, model = "mid")
+  print(nrow(mod.vips))
+  
+  return(model)
+}
+```
+
+
+# Individual panels
+BMI was explored not only on all proteomics panels combined but also on individual panels. Therefore, there is the code to explore each panel on each sex-stratification for BMI.
+```{r rdcv-PLS for individual panels for BMI, warning = FALSE, echo = FALSE, message=FALSE}
+model1 = model.rdcv(CVD2.bmi, "bmi.clin")
+model2 = model.rdcv(CVD2.bmi, "bmi.clin", "F")
+model3 = model.rdcv(CVD2.bmi, "bmi.clin", "M")
+model4 = model.rdcv(CVD3.bmi, "bmi.clin")
+model5 = model.rdcv(CVD3.bmi, "bmi.clin", "F")
+model6 = model.rdcv(CVD3.bmi, "bmi.clin", "M")
+model7 = model.rdcv(metabolism.bmi, "bmi.clin")
+model8 = model.rdcv(metabolism.bmi, "bmi.clin", "F")
+model9 = model.rdcv(metabolism.bmi, "bmi.clin", "M")
+```
+
+
+# All panels
+The following code will be used to combine all panels into a single one. As panels were preprocessed differently for each variable of exposure (BMI, WC and %BF), the combination of panels appears in three different ways.
+```{r}
+# BMI
+all.bmi = merge(CVD2.bmi[, c(1,grep("^OID", colnames(CVD2.bmi)))], CVD3.bmi[, c(1,grep("^OID", colnames(CVD3.bmi)))], by = "SIMPKEY")
+all.bmi = merge(all.bmi, metabolism.bmi[, grep("SIMPKEY|sex|bmi.clin|^OID", colnames(metabolism.bmi))], by = "SIMPKEY")
+# WC
+all.wc = merge(CVD2.wc[, c(1,grep("^OID", colnames(CVD2.wc)))], CVD3.wc[, c(1,grep("^OID", colnames(CVD3.wc)))], by = "SIMPKEY")
+all.wc = merge(all.wc, metabolism.wc[, grep("SIMPKEY|sex|Waist|^OID", colnames(metabolism.wc))], by = "SIMPKEY")
+# %BF
+all.bf = merge(CVD2.bf[, c(1,grep("^OID", colnames(CVD2.bf)))], CVD3.bf[, c(1,grep("^OID", colnames(CVD3.bf)))], by = "SIMPKEY")
+all.bf = merge(all.bf, metabolism.bf[, grep("SIMPKEY|sex|fett|^OID", colnames(metabolism.bf))], by = "SIMPKEY")
+```
+
+
+## Modeling on all panels
+Below, there are the models performed on BMI, WC and %BF. Note that BMI and WC models incorporate sex-stratifications whereas %BF no (as SMC-C Uppsala individuals were the only participants containing information about fat mass measurements).
+```{r rdcv-PLS for all panels for BMI and WC and %BF, warning = FALSE, echo = FALSE, message=FALSE}
+model10 = model.rdcv(all.bmi, "bmi.clin")
+model11 = model.rdcv(all.bmi, "bmi.clin", "F")
+model12 = model.rdcv(all.bmi, "bmi.clin", "M")
+
+model13 = model.rdcv(all.wc, "Waist")
+model14 = model.rdcv(all.wc, "Waist", "F")
+model15 = model.rdcv(all.wc, "Waist", "M")
+
+model16 = model.rdcv(all.bf, "X100_fett_total")
+model17 = model.rdcv(all.bf, "^fett_total")
+model18 = model.rdcv(all.bf, "fett_gynoid")
+model19 = model.rdcv(all.bf, "fett_android")
+```
+
+
+# Saving the models
+The completion of all models may take several hours. This supposes a lot of time and resources. Therefore, results from models should be stored in Rdata objects to easily retrieve their information. This step is to save the models in order to later work with them.
+```{r}
+models = list("model1" = model1, "model2" = model2, "model3" = model3,
+              "model4" = model4, "model5" = model5, "model6" = model6, 
+              "model7" = model7, "model8" = model8, "model9" = model9, 
+              "model10" = model10, "model11" = model11, "model12" = model12,
+              "model13" = model13, "model14" = model14, "model15" = model15,
+              "model16" = model16, "model17" = model17, "model18" = model18, 
+              "model19" = model19)
+
+saveRDS(models, file = paste0(dir.datasets,"models.PLS.rds"))
+```

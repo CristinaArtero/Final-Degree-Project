@@ -1,0 +1,332 @@
+---
+title: "Descriptive analysis on BMI categories of baseline, dietary and diseases characteristics"
+author: 
+- "Cristina Artero Martínez (Main author)"
+- "Enrique Almanza Aguilera (Supervision & Edition)"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  rmdformats::readthedown:
+    higlight: kate
+    code_folding: hide
+    toc_depth: 4
+  html_document:
+    df_print: paged
+header-includes:
+  - \renewcommand{\and}{\\}
+---
+
+<style type = "text/css">
+h1.title{ /* Title */
+  font-size: 40px
+}
+h1{ /* Header 1 */
+  font-size: 24px
+}
+h2{ /* Header 2 */
+  font-size: 20px
+}
+h3{ /* Header 3 */
+  font-size: 18px
+}
+h4{ /* Header 4 */
+  font-size: 15px
+}
+h5{ /* Header 5 */
+  font-size: 12px
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This report shows a preliminar analysis of some basic descriptives about baseline, dietary and diseases characteristics for BMI categories. The following tables were used and combined into 1 in Supplementary materials TS1.
+
+
+# Setting and loading packages + setting directories
+Packages and directories need to be prepared in order to have easier ways to operate and access data.
+```{r warning=FALSE, message=FALSE}
+# Making a list of the packages and loading them
+pckgs = c("ggplot2", "dplyr", "ggpubr", "xlsx", "readxl", "knitr", "kableExtra", "gdata", "gtsummary")
+invisible(lapply(pckgs, library, character.only = TRUE))
+
+# Preparing the directories
+# This directory represents the main directory (it contains the other directories, defined below)
+dir.datasets = "/home/crisam/crisam/datasets/"
+# This directory contains proteomics data of participants (here there are datasets corresponding to proteomics panels)
+dir.proteo = "/home/crisam/crisam/datasets/proteomics/"
+# This directory contains questionnaires data of participants (here  there are stored the questionnaires from 2008 and 2009)
+dir.ques = "/home/crisam/crisam/datasets/questionnaires/not from visits/"
+# This directory contains clinical data of participants (here there is stored the clinical examination dataset)
+dir.clin = "/home/crisam/crisam/datasets/clinical/"
+```
+
+
+# Loading datasets
+The tables for BMI will incorporate information from different datasets which need to be loaded. Below, there are some comments specifying about them.
+```{r}
+# Loading the datasets with health, dietary information, clinical and diseases information
+meta2008 = read.csv(paste0(dir.ques, "Q2008.csv")) # this dataset corresponds to the health questionnaire from 2008
+meta2009 = read.csv(paste0(dir.ques, "Q2009.csv")) # this dataset corresponds to the dietary and lifestyle questionnaire from 2009
+clin = read.csv(paste0(dir.clin, "visitclin.csv")) # this dataset corresponds to the clinical examination dataset
+diseases = read.csv(paste0(dir.datasets, "diseases.csv")) # this dataset corresponds to a history containing all documented diagnoses from participants
+ICD10 = read_excel(paste0(dir.datasets, "ICD_codes_10_selected.xlsx"), sheet = "codes_diseases", col_names = c("Full_code", "Code_abbreviation", "Disease", "Disease_abbreviation")) # this dataset corresponds to a conversion of diseases names and their abbreviations
+
+# Loading the dataset containing the population of interest
+delta.bwa_df = readRDS(file = paste0(dir.clin, "delta.bwa.omics.rds")) # this dataset corresponds to the Rdata object containing the dataset based on the population of interest
+prot = delta.bwa_df$delta.bwa.prot # this is the dataset with the population of interest
+```
+
+
+# Predefining some variables
+Some variables need to be specified or reformatted. Specifically, those that represent a factor or a date variable. In fact, only participants with BMI information must be considered (as it is the main anthropometric measure of this analysis). Therefore, participants with no BMI measurements must be discarded.
+```{r}
+# Sex must be a factor variable
+prot$sex = as.factor(prot$sex)
+# Participants with BMI information can only be considered for this analysis (if there is no information then subjects cannot be classified into a category)
+prot = prot[complete.cases(prot$bmi.clin),]
+# This analysis considers people below 25 kg/m² as normal weight, between 25-29.9 kg/m² as overweight and above 30 kg/m² as obesity
+prot$bmi.category = as.factor(ifelse(prot$bmi.clin < 25, "normal weight", ifelse(prot$bmi.clin < 30, "overweight", "obesity")))
+# The visitdate variable needs to be formatted as a date variable instead of a string
+prot$visitdate = as.Date(prot$visitdate, "%Y-%m-%d")
+```
+
+
+# Table 1. Baseline characteristics for BMI categories
+## Preparing the dataset
+As baseline characteristics of participants are the main interest for this descriptive, first variables of interest need to be selected for the descriptive (i.e., "living alone", "smoking", "grams of alcohol" and "physical activity (that makes you short of breath) for more than two hours per week").
+```{r}
+# Variables of interest from the health questionnaire from 2008 must be introduced in the population of interest dataset
+prot_baseline = merge(prot, meta2008[, c("SIMPKEY", "Q223")], by = "SIMPKEY", all.x = TRUE)
+# Variables of interest from the lifestyle and dietary questionnaire from 2009 must be introduced in the population of interest dataset
+prot_baseline = merge(prot_baseline, meta2009[, c("SIMPKEY", "F27_1", "NUT8", "F3")], by = "SIMPKEY", all.x = TRUE)
+# The variables of interest where "living alone", "smoking", "grams of alcohol" and "physical activity (that makes you short of breath) for more than two hours per week". They were codified so their names need to be change to more legible ones
+colnames(prot_baseline)[c(28:ncol(prot_baseline))] = c("alone", "smoking", "alcohol", "physical_activity")
+```
+
+## Reformatting some variables
+Variables are codified in a non-informative format, so their answers need to be transformed into an easier-to-interpret format.
+```{r}
+# Alone
+# For this variable, it is important to know the amount of people that live alone. As the variable originally contained information of years living alone, that means that if there is information, the person is living alone; if not, the person still lives together with someone
+prot_baseline[, "alone"] = as.factor(is.na(prot$alone))
+# As the variable now is a factor one of either living or not alone, the possible answers are "Yes" or "No". Check that in contrast to other variables, it does not incorporate NA values, as a filter of having an answer or not was applied
+levels(prot_baseline$alone) = c("No", "Yes")
+
+# Smoking
+# This variable needs to be transformed into a factor one, as it originally asked if the person was smoker or not
+prot_baseline[, "smoking"] = as.factor(prot_baseline[, "smoking"])
+# After reformatting, the possible answers need also to be transformed
+levels(prot_baseline$smoking) = c("No", "Yes", "Yes, but stopped", NA)
+
+# Physical activity
+# In the case of this variable, it also requires to be transformed into a factor one, as it originally represented if the person did any physical activity (that makes you short of breath) for more than two hours per week
+prot_baseline[, "physical_activity"] = as.factor(prot_baseline[, "physical_activity"])
+# Again, the possible answers are below
+levels(prot_baseline$physical_activity) = c("Yes", "No", NA)
+```
+
+## Basic descriptives
+After obtaining the variables, a table of descriptives is created. Observe that it will be stratified based on BMI categories. 
+```{r}
+prot_baseline %>% 
+  select(bmi.clin, bmi.category, weight.clin, d.weight.5y, d.bmi.5y, age.visit, sex, alone, smoking, alcohol, physical_activity) %>%
+  tbl_summary(by = bmi.category,
+              type = all_continuous() ~ "continuous2",
+              digits = list(all_categorical() ~ c(2,2), all_continuous() ~ c(2,2)),
+              label = list(bmi.clin ~ "Body mass index (kg/m^2)",
+                           weight.clin ~ "Body weight (kg)",
+                           d.weight.5y ~ "Body weight change in 5 years (kg/5y)",
+                           d.bmi.5y ~ "Body mass index change in 5 years (kg/m^2/5y)",
+                           age.visit ~ "Age",
+                           sex ~ "Sex",
+                           alone ~ "Living alone (2009)", 
+                           alcohol ~ "Alcohol (g)",
+                           physical_activity ~ "Physical activity (2009)"),
+              statistic = all_continuous() ~ c("{median} ({p5},{p95})", "{mean} ± {sd}")) %>%
+  add_n() %>%
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 3)) %>%
+  modify_caption("**Table 1. Baseline characteristics for BMI categories**") %>%
+  bold_labels()
+```
+
+
+# Table 2. Dietary characteristics for BMI categories
+## Preparing the dataset
+In order to analyze the dietary characteristics of participants, variables of interest need first to be selected to perform the descriptive analysis.
+```{r}
+# Variables of interest from the lifestyle and dietary questionnaire from 2009 must be introduced in the population of interest dataset
+prot_diet = merge(prot, meta2009[, c("SIMPKEY", "NUT1", "F23_1")], by = "SIMPKEY", all.x = TRUE)
+# The variables of interest where "dietary intake in kcal/day" and "consumption of any vitamin/mineral supplement". They were codified so their names need to be changed to more legible ones 
+colnames(prot_diet)[c(28:29)] = c("intake", "vita_min_sup")
+```
+
+## Reformatting some variables
+As in the previous table, variables are codified in a non-informative format, so the answers need to be transformed into an easier-to-interpret format. In particular, vitamin/mineral supplements (a factor variable).
+```{r}
+# The variable represents a factor variable, so it must be transformed into a factor one
+prot_diet[, "vita_min_sup"] = as.factor(prot_diet[, "vita_min_sup"])
+# After that, answers are recodified into a new format. Observe that some levels are set as NA due to errors of classification during data collection
+levels(prot_diet$vita_min_sup) = c(NA, "No", "Sometimes", "Yes", NA, NA)
+```
+
+## Basic descriptives
+After obtaining the variables, a table of descriptives is created. Observe that it will be stratified based on BMI categories.
+```{r}
+prot_diet %>% 
+  select(bmi.clin, bmi.category, age.visit, sex, intake, carbohydrates, protein, fat, fatty_acids_monounsat, fatty_acids_polyunsat, fatty_acids_sat, vita_min_sup, vitamin_B6, vitamin_B12, vitamin_D, vitamin_E, iron, calcium,  sodium, fiber, alcohol) %>%
+  tbl_summary(by = bmi.category,
+              type = all_continuous() ~ "continuous2",
+              digits = list(all_categorical() ~ c(2,2), all_continuous() ~ c(2,2)),
+              label = list(bmi.clin ~ "Body mass index (kg/m^2)",
+                           age.visit ~ "Age",
+                           sex ~ "Sex",
+                           intake ~ "Dietary intake (kcal/day)", 
+                           vita_min_sup ~ "Do you consume vitamins, minerals or any other supplements (g/day)?"),
+              statistic = all_continuous() ~ c("{median} ({p5},{p95})", "{mean} ± {sd}")) %>%
+  add_n() %>%
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  modify_caption("**Table 2. Dietary characteristics for BMI categories**") %>%
+  bold_labels()
+```
+
+
+# Table 3. Diseases characteristics for BMI categories
+## Preparing the dataset
+In the case of diseases, individuals have their diagnoses stored in a dataset (diseases), where the diagnose date needs to be reformatted. The reason for that is because it will be useful for further analyses and instead of a having a date format, it is set as a string. Below we can find the process step-by-step.
+```{r}
+# Obtain characters at positions 1 and 2 (the day)
+diseases$day.indate=substr(diseases$indate,1,2)
+# Obtain characters at positions3 to 5 (the month)
+diseases$month.indate=substr(diseases$indate,3,5)
+# Convert the month's name in lowercase (just for the format)
+diseases$month.indate=tolower(diseases$month.indate)
+# # With this, lowercased months will be matched to the actual month names that R has stored
+diseases$month.indate=match(diseases$month.indate,tolower(month.abb))
+# Leave the months as numbers instead of characters
+diseases$month.indate=sprintf("%02d",diseases$month.indate)
+# Substract the year
+diseases$year.visit=substr(diseases$indate,nchar(diseases$indate)-4+1,nchar(diseases$indate))
+# Set the variable diagose.date by combining the year, the month and the day of the diagnose (separated by "-")
+diseases$diagnose.date=paste(diseases$year.visit,diseases$month.indate,diseases$day.indate,sep = "-")
+# Set the variable as date variable
+diseases$diagnose.date = as.Date(diseases$diagnose.date, "%Y-%m-%d")
+```
+
+## Adding the year of diagnose
+It is also important to note that the year of diagnose should also be kept, in order to avoid diagnoses that may be repeated for the same year.
+```{r}
+# Here we obtain the year of visit
+diseases$year.diagnose = substr(diseases$indate,nchar(diseases$indate)-4+1,nchar(diseases$indate))
+# Then the year is transformed into a numeric value
+diseases$year.diagnose = as.numeric(diseases$year.diagnose)
+```
+
+## Preprocessing: Duplicate diagnoses for the same year
+Initially, a removal of duplicated rows and a identification of diagnoses needs to be performed. Diagnoses are stored in ICD10 format in the variable "hdia". If an individual contains the same diagnose for the same year (even if it is in different dates), it must be removed ("hdia" and "year.diagnose" are duplicated for the same person).
+```{r}
+# The following instruction selects individuals with diagnoses that are not duplicated for the same year
+df_diseases = diseases[diseases$SIMPKEY %in% prot$SIMPKEY,c("SIMPKEY", "hdia", "year.diagnose", "diagnose.date")] %>%
+  distinct(SIMPKEY, hdia, year.diagnose, .keep_all = TRUE) # This implies removing repeated rows
+
+# The main diagnose is stored as a code of 3 characters followed by a specification. We only need the first 3 characters (the ones refering to the main diagnose)
+df_diseases$main = substr(df_diseases$hdia,1,3)
+
+print(paste0("Number of known diagnostics present in the diseases dataframe: ",length(df_diseases$main %in% ICD10$Code_abbreviation)))
+
+# With this, datasets are combined based on code abbreviation
+df_diseases = left_join(df_diseases, ICD10, by = c("main" = "Code_abbreviation"))[c(1:5,7:8)]
+# Next, to the newly created diseases dataset, the year of visit and the visitdate of participants in the population of interest are incorporated
+df_diseases = left_join(df_diseases, prot[, c("SIMPKEY", "year.visit", "visitdate")], by = "SIMPKEY")
+# To ensure that rows are not duplicated, the following instructions keeps only non-duplicated rows
+prot_diseases = distinct(df_diseases)
+```
+
+## Preprocessing: Duplicate diganoses for different years
+To avoid duplicate diagnoses (i.e., same diagnoses for different years), the dataset must remove duplicate rows based on the id and the diagnose for that person.
+```{r}
+# Duplicates (people that have the same diagnose in different years) are removed
+prot_diseases_nodup = distinct(prot_diseases, SIMPKEY, main, .keep_all = TRUE)
+```
+
+## Prevalence and incidence of diseases
+It is not the same having been dignosed during the study than before the study. That means that prevalent (before the study) and incident (during the study) diagnoses need to be distinguished. The following function will be useful to determine if participants have incident or prevalent diseases.
+```{r}
+# The function takes 3 arguments: a dataset that will be returned as the final one, a dataset that will be edited constantly (to safely perform changes) and a dataset used as a reference (to compare it with)
+create_diseases_df = function(output, edited, reference){
+  
+  # First, individuals that have a disease are selected
+  edited = edited[complete.cases(edited[,"Disease_abbreviation"]),]
+
+  # The following lines summarize the process of classifying a prevalent or an incident diagnose. The key point is comparing the visit date with the diagnose date. If the diagnose was given before the visit, the disease was prevalent. If not, then the disease was developed during the years of the study. In all cases, if the individual has a diagnose of either type, they will be assigned a 1 for that disease; if not, a 0 is assigned
+  # Cancer: prevalent vs incident
+  edited$cancer.p = ifelse(edited$diagnose.date < edited$visitdate & edited$Disease_abbreviation == "cancer", 1, 0)
+  edited$cancer.i = ifelse(edited$diagnose.date >= edited$visitdate & edited$Disease_abbreviation == "cancer", 1, 0)
+  # Diabetes: prevalent vs incident
+  edited$diabetes.p = ifelse(edited$diagnose.date < edited$visitdate & edited$Disease_abbreviation == "diabetes", 1, 0)
+  edited$diabetes.i = ifelse(edited$diagnose.date >= edited$visitdate & edited$Disease_abbreviation == "diabetes", 1, 0)
+  # CVD: prevalent vs incident
+  edited$cvd.p = ifelse(edited$diagnose.date < edited$visitdate & edited$Disease_abbreviation == "cvd", 1, 0)
+  edited$cvd.i = ifelse(edited$diagnose.date >= edited$visitdate & edited$Disease_abbreviation == "cvd", 1, 0)
+  # Dementia: prevalent vs incident
+  edited$dementia.p = ifelse(edited$diagnose.date < edited$visitdate & edited$Disease_abbreviation == "dementia", 1, 0)
+  edited$dementia.i = ifelse(edited$diagnose.date >= edited$visitdate & edited$Disease_abbreviation == "dementia", 1, 0)
+  
+  # The actual output will be only the ids and the presence/absence of prevalent/incident diseases
+  output = edited[, c("SIMPKEY", "cancer.p", "cancer.i", "diabetes.p", "diabetes.i", "cvd.p", "cvd.i", "dementia.p", "dementia.i")]
+  output = aggregate(.~ SIMPKEY, output, sum)
+  
+  # In the case of participants with neither prevalent/incident diseases, they will have a row full of 0
+  for (i in reference$SIMPKEY){
+    if (!(i %in% output$SIMPKEY)){
+      output = rbind(output, c(i,0,0,0,0,0,0,0,0))
+    }
+  }
+  
+  # To keep the original order of rows (i.e., the ids order), the output dataset will be matched to the reference one. Thus, the order is kept
+  output = output[match(reference$SIMPKEY, output$SIMPKEY),]
+  
+  # For comfortability purposes, the variables with 0 and 1 are converted as factor ones with "No" and "Yes"
+  output$cancer.p = factor(as.logical(as.numeric(output$cancer.p)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$cancer.i = factor(as.logical(as.numeric(output$cancer.i)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$diabetes.p = factor(as.logical(as.numeric(output$diabetes.p)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$diabetes.i = factor(as.logical(as.numeric(output$diabetes.i)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$cvd.p = factor(as.logical(as.numeric(output$cvd.p)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$cvd.i = factor(as.logical(as.numeric(output$cvd.i)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$dementia.p = factor(as.logical(as.numeric(output$dementia.p)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  output$dementia.i = factor(as.logical(as.numeric(output$dementia.i)), levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+  
+  # Next, the BMI category and the BMI value are added to the dataset. If not, the table would not be possible to construct
+  output$bmi.category = reference$bmi.category
+  output$bmi.clin = reference$bmi.clin
+
+  return(output)
+}
+```
+
+After having defined the function, it is applied on the diseases dataset
+```{r}
+prot_diseases = create_diseases_df(prot_diseases, prot_diseases_nodup, prot)
+```
+
+## Basic descriptives
+After obtaining the variables, a table of descriptives is created. Observe that it will be stratified based on BMI categories. In table S1 the only variables showed where prevalent cancer, diabetes and CVD diseases. therefore, they are also shown here.
+```{r}
+prot_diseases %>% 
+  select(bmi.clin, bmi.category, cancer.p, cancer.i, diabetes.p, diabetes.i, cvd.p, cvd.i, dementia.p, dementia.i) %>%
+  tbl_summary(by = bmi.category,
+              type = list(c(cancer.p, cancer.i, diabetes.p, diabetes.i, cvd.p, cvd.i, dementia.p, dementia.i) ~ "categorical", all_continuous() ~ "continuous2"),
+              digits = list(all_categorical() ~ c(2,2), all_continuous() ~ c(2,2)),
+              label = list(bmi.clin ~ "Body mass index (kg/m^2)",
+                           cancer.p ~ "Prevalent cancer",
+                           diabetes.p ~ "Prevalent diabetes", 
+                           cvd.p ~ "Prevalent cardiovascular diseases"),
+              statistic = all_continuous() ~ c("{median} ({p5},{p95})", "{mean} ± {sd}")) %>%
+  add_n() %>%
+  add_overall() %>%
+  add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+  modify_caption("**Table 3. Diseases characteristics for BMI categories**") %>%
+  bold_labels()
+```
